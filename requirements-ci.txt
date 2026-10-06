@@ -4,5 +4,6 @@
 torch==2.2.2
 numpy<2
 soundfile>=0.12.1
+tqdm
 geoopt>=0.5.0
 pytest>=7.0

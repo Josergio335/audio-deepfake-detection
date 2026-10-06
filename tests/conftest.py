@@ -6,6 +6,7 @@ instaladas librerias pesadas que solo usan los extractores reales
 las pruebas corran en CI sin descargar modelos.
 """
 
+import importlib.machinery
 import sys
 import types
 from pathlib import Path
@@ -16,6 +17,7 @@ sys.path.insert(0, str(RAIZ / "05_modelo"))
 
 def _falso(nombre, **atributos):
     modulo = types.ModuleType(nombre)
+    modulo.__spec__ = importlib.machinery.ModuleSpec(nombre, None)  # torch lo consulta con find_spec
     for k, v in atributos.items():
         setattr(modulo, k, v)
     sys.modules[nombre] = modulo
