@@ -1,0 +1,7 @@
+flujo,version,silueta_idioma,silueta_clase,acc_idioma,acc_clase,discrepancia_estilo_entre_idiomas,dispersion_estilo
+wav2vec2bert,antes,0.0015,0.0179,0.7671,0.8843,0.5988,0.9617
+wav2vec2bert,despues,0.0025,0.0179,0.7657,0.8833,0.5397,0.8582
+wavlm,antes,0.1348,0.0098,0.9752,0.8262,0.6118,0.8004
+wavlm,despues,0.1350,0.0098,0.9738,0.8224,0.5794,0.7117
+whisper,antes,0.1182,0.0150,0.9967,0.9100,0.4390,0.9613
+whisper,despues,0.1219,0.0152,0.9967,0.9100,0.4194,0.9111

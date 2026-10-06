@@ -1,0 +1,8 @@
+# Dependencias minimas para las pruebas en integracion continua (CPU, sin GPU
+# ni modelos fundacionales). Para el entorno completo usar requirements.txt.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2
+numpy<2
+soundfile>=0.12.1
+geoopt>=0.5.0
+pytest>=7.0

@@ -1,34 +1,40 @@
 """
-preprocesamiento_dataset.py
-Preprocesa los audios listados en el manifest de Exp-3.
+preprocesamiento_test.py
+Preprocesa los audios de los conjuntos de prueba (test).
+
+Igual que preprocesamiento_dataset.py pero apunta a:
+    - INPUT_BASE  : D:/Bases de Datos extraidas   (audios originales sin procesar)
+    - OUTPUT_BASE : D:/Archivos Test Procesados    (carpeta separada del train)
+    - MANIFEST    : uno de los 3 manifests de test (pasado por argumento)
 
 Operaciones por archivo:
     1. Carga el audio (WAV o FLAC)
     2. Resamplea a 16 kHz mono
     3. Aplica WebRTC VAD para eliminar frames de silencio
-    4. Guarda como WAV 16-bit en D:/Bases de Datos procesadas/
-       replicando la estructura de carpetas del original
+    4. Guarda como WAV 16-bit replicando la estructura del original
 
 Caracteristicas:
     - Reanudable: salta archivos que ya existen en destino
     - Multiproceso: N workers en paralelo (default: 4)
-    - Log de exito y errores en D:/Particiones/preprocesamiento_log.txt
+    - Log de exito y errores junto al manifest de test
 
 Uso:
-    python preprocesamiento_dataset.py                # 4 workers
-    python preprocesamiento_dataset.py --workers 8    # 8 workers
-    python preprocesamiento_dataset.py --dry-run      # muestra cuantos faltan sin procesar
-    python preprocesamiento_dataset.py --vad-mode 2   # agresividad VAD 0-3 (default 2)
+    python preprocesamiento_test.py --manifest D:/Particiones/manifest_test_indistribucion.csv
+    python preprocesamiento_test.py --manifest D:/Particiones/manifest_test_zeroshot.csv
+    python preprocesamiento_test.py --manifest D:/Particiones/manifest_test_fueradominio.csv
+    python preprocesamiento_test.py --manifest ... --dry-run
+    python preprocesamiento_test.py --manifest ... --workers 8
+
+En el servidor:
+    python preprocesamiento_test.py --manifest ~/particiones/manifest_test_indistribucion.csv
 """
 
 import csv
 import argparse
 import logging
 import multiprocessing
-import os
 import struct
 import time
-from datetime import datetime
 from pathlib import Path
 
 import librosa
@@ -37,26 +43,25 @@ import soundfile as sf
 import webrtcvad
 
 # ---------------------------------------------------------------------------
-# Configuracion
+# Configuración
 # ---------------------------------------------------------------------------
 
-MANIFEST       = Path.home() / "particiones/Exp3/manifest.csv"   # Cambiar por la ruta donde está el manifest
-INPUT_BASE     = Path.home() / "datos/Bases de Datos extraidas"   # Cambiar por la ruta donde están los audios originales
-OUTPUT_BASE    = Path.home() / "datos/Bases de Datos procesadas"  # Cambiar por la ruta donde se guardarán los audios procesados
-LOG_FILE       = Path.home() / "particiones/preprocesamiento_log.txt"  # Cambiar por la ruta donde se guardará el log
+# AJUSTAR según el entorno de ejecución
+INPUT_BASE  = Path(r"D:\Bases de Datos extraidas")    # Cambiar por la ruta donde están los audios originales
+OUTPUT_BASE = Path(r"D:\Archivos Test Procesados")    # Cambiar por la ruta donde se guardarán los audios de test
 
-SAMPLE_RATE    = 16000   # Hz objetivo
-VAD_MODE       = 2       # agresividad WebRTC VAD: 0 (suave) a 3 (agresivo)
-FRAME_MS       = 30      # duracion de frame VAD en ms (10, 20 o 30)
-MIN_SPEECH_SEC = 0.5     # descartar audio si queda menos de esto tras VAD
+SAMPLE_RATE    = 16000
+VAD_MODE       = 2
+FRAME_MS       = 30
+MIN_SPEECH_SEC = 0.5
 
 # ---------------------------------------------------------------------------
-# Logging (solo al archivo — stdout lo maneja el proceso principal)
+# Logging
 # ---------------------------------------------------------------------------
 
-def setup_logging():
+def setup_logging(log_file: Path):
     logging.basicConfig(
-        filename=str(LOG_FILE),
+        filename=str(log_file),
         filemode="a",
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -64,14 +69,10 @@ def setup_logging():
     )
 
 # ---------------------------------------------------------------------------
-# VAD: eliminar frames de silencio
+# VAD
 # ---------------------------------------------------------------------------
 
 def aplicar_vad(audio_int16: np.ndarray, sr: int, mode: int) -> np.ndarray:
-    """
-    Divide el audio en frames de FRAME_MS ms y descarta los silenciosos.
-    Devuelve el audio concatenado con solo los frames con voz.
-    """
     vad = webrtcvad.Vad(mode)
     frame_samples = int(sr * FRAME_MS / 1000)
     frames_con_voz = []
@@ -87,64 +88,48 @@ def aplicar_vad(audio_int16: np.ndarray, sr: int, mode: int) -> np.ndarray:
 
     return np.concatenate(frames_con_voz)
 
-
 # ---------------------------------------------------------------------------
-# Procesamiento de un archivo (ejecutado en worker)
+# Procesamiento de un archivo
 # ---------------------------------------------------------------------------
 
 def procesar_archivo(args):
-    """
-    Retorna (ruta_origen, estado) donde estado es 'ok', 'skip', 'vacio' o 'error: <msg>'.
-    """
     ruta_str, vad_mode = args
     ruta = Path(ruta_str)
 
-    # Calcular ruta de destino
     try:
         rel = ruta.relative_to(INPUT_BASE)
     except ValueError:
-        # La ruta no esta bajo INPUT_BASE — usar solo el nombre de archivo
         rel = Path(ruta.name)
 
     destino = OUTPUT_BASE / rel.with_suffix(".wav")
 
-    # Saltar si ya existe
     if destino.exists():
         return (ruta_str, "skip")
 
     try:
-        # 1. Cargar y resamplear a 16kHz mono
         audio_float, _ = librosa.load(ruta, sr=SAMPLE_RATE, mono=True)
-
-        # 2. Convertir a int16 para WebRTC VAD
         audio_int16 = (audio_float * 32767).clip(-32768, 32767).astype(np.int16)
-
-        # 3. Aplicar VAD
         audio_vad = aplicar_vad(audio_int16, SAMPLE_RATE, vad_mode)
 
         if len(audio_vad) < SAMPLE_RATE * MIN_SPEECH_SEC:
             return (ruta_str, f"vacio (menos de {MIN_SPEECH_SEC}s de voz tras VAD)")
 
-        # 4. Guardar
         destino.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(destino), audio_vad, SAMPLE_RATE, subtype="PCM_16")
-
         return (ruta_str, "ok")
 
     except Exception as e:
         return (ruta_str, f"error: {e}")
 
-
 # ---------------------------------------------------------------------------
-# Cargar manifest y calcular pendientes
+# Cargar manifest
 # ---------------------------------------------------------------------------
 
-def cargar_pendientes(vad_mode):
-    """Devuelve lista de (ruta, vad_mode) para archivos aun no procesados."""
+def cargar_pendientes(manifest: Path, vad_mode: int):
     pendientes = []
     ya_hechos = 0
 
-    with open(MANIFEST, encoding="utf-8") as f:
+    with open(manifest, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             ruta = Path(row["ruta"])
             try:
@@ -160,38 +145,35 @@ def cargar_pendientes(vad_mode):
 
     return pendientes, ya_hechos
 
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Preprocesa audios de Exp-3: resample 16kHz + WebRTC VAD"
+        description="Preprocesa audios de los conjuntos de prueba: resample 16kHz + WebRTC VAD"
     )
-    parser.add_argument("--workers",  type=int, default=4,
-                        help="Numero de procesos paralelos (default: 4)")
-    parser.add_argument("--vad-mode", type=int, default=VAD_MODE, choices=[0,1,2,3],
-                        help="Agresividad del VAD: 0=suave, 3=agresivo (default: 2)")
-    parser.add_argument("--dry-run",  action="store_true",
-                        help="Muestra cuantos archivos faltan sin procesar ninguno")
+    parser.add_argument("--manifest", type=Path, required=True,
+                        help="Ruta al manifest de test (manifest_test_*.csv)")
+    parser.add_argument("--workers",  type=int, default=4)
+    parser.add_argument("--vad-mode", type=int, default=VAD_MODE, choices=[0,1,2,3])
+    parser.add_argument("--dry-run",  action="store_true")
     args = parser.parse_args()
 
-    setup_logging()
-    logging.info("="*60)
-    logging.info(f"PREPROCESAMIENTO INICIADO — workers={args.workers}, vad_mode={args.vad_mode}")
+    log_file = args.manifest.parent / (args.manifest.stem + "_preprocesamiento_log.txt")
+    setup_logging(log_file)
 
     print("=" * 62)
-    print("  PREPROCESAMIENTO DE DATASET  —  Exp-3")
+    print(f"  PREPROCESAMIENTO TEST — {args.manifest.name}")
     print("=" * 62)
-    print(f"  Manifest  : {MANIFEST}")
+    print(f"  Manifest  : {args.manifest}")
+    print(f"  Input     : {INPUT_BASE}")
     print(f"  Destino   : {OUTPUT_BASE}")
     print(f"  Workers   : {args.workers}")
     print(f"  VAD mode  : {args.vad_mode}")
     print()
 
-    print("Calculando archivos pendientes ...")
-    pendientes, ya_hechos = cargar_pendientes(args.vad_mode)
+    pendientes, ya_hechos = cargar_pendientes(args.manifest, args.vad_mode)
     total = len(pendientes) + ya_hechos
 
     print(f"  Total en manifest : {total:,}")
@@ -200,7 +182,7 @@ def main():
 
     if args.dry_run or not pendientes:
         if not pendientes:
-            print("\nTodos los archivos ya estan procesados.")
+            print("\nTodos los archivos ya están procesados.")
         return
 
     print(f"\nIniciando procesamiento con {args.workers} workers ...")
@@ -208,7 +190,6 @@ def main():
 
     t_inicio = time.time()
     contadores = {"ok": 0, "skip": 0, "vacio": 0, "error": 0}
-    intervalo_reporte = 500  # imprimir progreso cada N archivos
 
     with multiprocessing.Pool(processes=args.workers) as pool:
         for i, (ruta, estado) in enumerate(
@@ -225,18 +206,14 @@ def main():
                 contadores["error"] += 1
                 logging.error(f"ERROR {ruta} — {estado}")
 
-            if i % intervalo_reporte == 0 or i == len(pendientes):
+            if i % 500 == 0 or i == len(pendientes):
                 elapsed = time.time() - t_inicio
                 velocidad = i / elapsed if elapsed > 0 else 0
-                restantes = len(pendientes) - i
-                eta_seg = restantes / velocidad if velocidad > 0 else 0
-                eta_h = eta_seg / 3600
-                pct = i / len(pendientes) * 100
+                eta_h = (len(pendientes) - i) / velocidad / 3600 if velocidad > 0 else 0
                 print(
-                    f"  [{pct:5.1f}%] {i:,}/{len(pendientes):,} "
+                    f"  [{i/len(pendientes)*100:5.1f}%] {i:,}/{len(pendientes):,} "
                     f"| ok={contadores['ok']:,} err={contadores['error']:,} "
-                    f"| {velocidad:.1f} arch/s "
-                    f"| ETA: {eta_h:.1f}h"
+                    f"| {velocidad:.1f} arch/s | ETA: {eta_h:.1f}h"
                 )
 
     elapsed_total = time.time() - t_inicio

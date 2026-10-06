@@ -1,0 +1,55 @@
+# ============================================================
+# requirements.txt — Audio Deepfake Detection
+# PUCP Tesis 2 — Sergio Huamán
+# ============================================================
+#
+# INSTALACION DESDE CERO (servidor Linux con GPU NVIDIA):
+#
+#   # 1. Crear entorno virtual
+#   python3 -m venv venv
+#   source venv/bin/activate
+#
+#   # 2. Instalar PyTorch con CUDA 12.1 (ajustar segun nvidia-smi del servidor)
+#   pip install torch==2.2.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cu121
+#
+#   # 3. Instalar el resto de dependencias
+#   pip install -r requirements.txt
+#
+# VERIFICAR GPU DISPONIBLE:
+#   python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+#
+# NOTA CUDA: si el servidor tiene una version distinta de CUDA, consultar:
+#   https://pytorch.org/get-started/locally/
+#   y reemplazar cu121 por cu118 (CUDA 11.8) o cu124 (CUDA 12.4) segun corresponda
+# ============================================================
+
+# ------------------------------------------------------------
+# Foundation Models — descarga automatica de HuggingFace Hub
+# ------------------------------------------------------------
+transformers>=4.38.0          # Wav2Vec2BERT, WavLM, Whisper
+accelerate>=0.27.0            # carga eficiente de modelos grandes en GPU
+huggingface-hub>=0.21.0       # gestion de cache de modelos descargados
+
+# ------------------------------------------------------------
+# Audio
+# ------------------------------------------------------------
+soundfile>=0.12.1             # lectura de archivos WAV
+# torchaudio se instala en el paso 2 junto con torch
+
+# ------------------------------------------------------------
+# Geometria hiperbolica (SERM — bola de Poincare)
+# ------------------------------------------------------------
+geoopt>=0.5.0                 # optimizacion en variedades de Riemannian
+
+# ------------------------------------------------------------
+# Utilidades generales
+# ------------------------------------------------------------
+tqdm>=4.66.0                  # barras de progreso
+numpy>=1.26.0                 # operaciones numericas base
+pandas>=2.1.0                 # lectura/escritura de CSV (manifest, indice)
+
+# ------------------------------------------------------------
+# Opcional: visualizacion de resultados (evaluate.py, t-SNE)
+# ------------------------------------------------------------
+matplotlib>=3.8.0             # graficas de convergencia (metricas.csv -> PNG)
+scikit-learn>=1.4.0           # t-SNE, metricas adicionales

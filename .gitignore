@@ -1,0 +1,24 @@
+# Entorno y caches
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+.vscode/
+.idea/
+
+# Datos, embeddings y salidas pesadas (no se versionan)
+*.pt
+*.npz
+*.wav
+*.flac
+*.mp3
+*.zip
+*.tgz
+embeddings/
+entrenamientos/
+datos/
+resultados_rasa_exp1/muestra_embeddings.npz
+
+# Excepcion: modelos finales del repositorio (checkpoints de las corridas finales)
+!modelos_entrenados/**/*.pt

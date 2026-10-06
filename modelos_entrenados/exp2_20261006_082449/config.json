@@ -1,0 +1,13 @@
+{
+  "exp": 2,
+  "epochs": 100,
+  "batch_size": 256,
+  "lr": 0.001,
+  "workers": 4,
+  "device": "cuda",
+  "reanudar": false,
+  "val_pct": 20,
+  "lambda_orth": 1.0,
+  "lambda_reco": 1.0,
+  "lambda_serm": 0.05
+}
