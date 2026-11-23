@@ -190,8 +190,31 @@ def parsear(pares):
     return out
 
 
+def informe_tdcf(a, ours, datos, rng):
+    """min t-DCF normalizado sobre los archivos de LA eval, con el audio original y recomprimido a MP3.
+    Los puntajes del sistema ASV de referencia son los del paquete de ASVspoof 2019 (solo cambian los del CM)."""
+    tar, non, spoof_asv = leer_asv(a.asv)
+    asv = tasas_asv(tar, non, spoof_asv)
+    print("\n=== 3. min t-DCF normalizado, ASVspoof 2019 LA eval (limpio y comprimido) ===")
+    print(f"  ASV: EER {pct(asv['eer_asv'])} | Pfa {pct(asv['Pfa_asv'])} | Pmiss {pct(asv['Pmiss_asv'])} | "
+          f"Pmiss_spoof {pct(asv['Pmiss_spoof_asv'])}  (tar={len(tar):,} non={len(non):,} spoof={len(spoof_asv):,})")
+    for esc, marca in (("indistribucion", "/LA/eval/"), ("compresion_mp3_32kbps", "/eval/")):
+        print(f"\n  {esc}")
+        for et, _ in ours:
+            d = datos[(esc, et)]
+            m = np.array([marca in x.replace("\\", "/") for x in d["ruta"]])
+            bona, spf = -d["s"][m & (d["y"] == 0)], -d["s"][m & (d["y"] == 1)]
+            v = min_tdcf(bona, spf, asv)
+            boots = [min_tdcf(bona[rng.integers(0, len(bona), len(bona))], spf[rng.integers(0, len(spf), len(spf))], asv)
+                     for _ in range(a.reps)]
+            lo, hi = ic(boots)
+            print(f"    {et:<18} min t-DCF {v:.4f} [{lo:.4f}, {hi:.4f}]   (bonafide={len(bona):,}, spoof={len(spf):,})")
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--solo-tdcf", action="store_true", dest="solo_tdcf",
+                    help="solo calcula el t-DCF (limpio y comprimido); no escribe los demas resultados")
     ap.add_argument("--ours", nargs="+", required=True, help='"etiqueta=corrida" (scores de exportar_scores.py)')
     ap.add_argument("--baselines", nargs="*", default=[], help='"etiqueta=carpeta_del_baseline"')
     ap.add_argument("--asv", type=Path, help="ASVspoof2019.LA.asv.eval.gi.trl.scores.txt")
@@ -210,6 +233,10 @@ def main():
         for et, co in bases:
             datos[(esc, et)] = cargar_baseline(esc, co, idiomas)
     etiquetas = [e for e, _ in ours] + [e for e, _ in bases]
+
+    if a.solo_tdcf:
+        informe_tdcf(a, ours, datos, rng)
+        return
 
     # 1. EER y AUROC con IC
     filas = []
@@ -252,22 +279,9 @@ def main():
             marca = "significativa" if (lo > 0 or hi < 0) else "no significativa"
             print(f"  vs {et:<18} diferencia {e1 * 100 - e2 * 100:+7.2f} pp  IC95 [{lo * 100:+.2f}, {hi * 100:+.2f}]  ({marca})")
 
-    # 3. t-DCF en LA eval
+    # 3. t-DCF en LA eval (limpio y comprimido)
     if a.asv:
-        tar, non, spoof_asv = leer_asv(a.asv)
-        asv = tasas_asv(tar, non, spoof_asv)
-        print("\n=== 3. min t-DCF normalizado, ASVspoof 2019 LA eval ===")
-        print(f"  ASV: EER {pct(asv['eer_asv'])} | Pfa {pct(asv['Pfa_asv'])} | Pmiss {pct(asv['Pmiss_asv'])} | "
-              f"Pmiss_spoof {pct(asv['Pmiss_spoof_asv'])}  (tar={len(tar):,} non={len(non):,} spoof={len(spoof_asv):,})")
-        for et, _ in ours:
-            d = datos[("indistribucion", et)]
-            m = np.array(["/LA/eval/" in x.replace("\\", "/") for x in d["ruta"]])
-            bona, spf = -d["s"][m & (d["y"] == 0)], -d["s"][m & (d["y"] == 1)]
-            v = min_tdcf(bona, spf, asv)
-            boots = [min_tdcf(bona[rng.integers(0, len(bona), len(bona))], spf[rng.integers(0, len(spf), len(spf))], asv)
-                     for _ in range(a.reps)]
-            lo, hi = ic(boots)
-            print(f"  {et:<18} min t-DCF {v:.4f} [{lo:.4f}, {hi:.4f}]   (bonafide={len(bona):,}, spoof={len(spf):,})")
+        informe_tdcf(a, ours, datos, rng)
 
     # 4. EER por idioma en zeroshot_exp4
     print("\n=== 4. EER por idioma en zeroshot_exp4 (idiomas con ambas clases) ===")
