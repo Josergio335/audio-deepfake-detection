@@ -98,43 +98,80 @@ def generar_indistribucion(base: Path) -> list[dict]:
 
 def generar_zeroshot(base: Path, rng: random.Random) -> list[dict]:
     """
-    MLAAD estructura: base/MLAAD/fake/{idioma}/{modelo_tts}/*.wav
-    Solo spoof. Se excluyen los 7 idiomas de entrenamiento.
-    Muestreo estratificado: máximo MAX_ZEROSHOT_POR_IDIOMA por idioma.
+    Spoof: MLAAD idiomas no vistos (base/MLAAD/fake/{idioma}/), máx MAX_ZEROSHOT_POR_IDIOMA por idioma.
+    Bonafide: M-AILABS (BASE_PROCESADA/M-AILABS/), muestreado para igualar el total de spoof.
+    Nota: el bonafide es de idiomas de entrenamiento — se documenta en la tesis.
     """
-    filas = []
+    filas_spoof = []
     raiz_mlaad = base / "MLAAD" / "fake"
 
     if not raiz_mlaad.exists():
         print(f"  ADVERTENCIA: no se encontró {raiz_mlaad}")
-        return filas
+        return filas_spoof
 
     for carpeta_idioma in sorted(raiz_mlaad.iterdir()):
         if not carpeta_idioma.is_dir():
             continue
         idioma = carpeta_idioma.name
         if idioma in IDIOMAS_TRAIN:
-            continue  # excluir idiomas de entrenamiento
+            continue
 
         wavs = listar_wavs(carpeta_idioma)
         if not wavs:
             continue
 
-        # Muestreo estratificado con semilla fija
         muestra = rng.sample(wavs, min(len(wavs), MAX_ZEROSHOT_POR_IDIOMA))
         for wav in muestra:
-            filas.append(ruta_a_fila(wav, "MLAAD", idioma, "spoof", "zeroshot"))
+            filas_spoof.append(ruta_a_fila(wav, "MLAAD", idioma, "spoof", "zeroshot"))
 
-    print(f"  Zero-shot: {len(filas):,} archivos de {sum(1 for f in filas if True)//1} entradas")
-    # Contar idiomas únicos
-    idiomas_unicos = len({f["idioma"] for f in filas})
-    print(f"  Zero-shot: {len(filas):,} archivos, {idiomas_unicos} idiomas")
-    return filas
+    idiomas_unicos = len({f["idioma"] for f in filas_spoof})
+    print(f"  Zero-shot spoof : {len(filas_spoof):,} archivos, {idiomas_unicos} idiomas")
+
+    # Bonafide de M-AILABS para balancear (mismo número que spoof)
+    filas_bonafide = []
+    raiz_mailabs = base / "M-AILABS"
+    if raiz_mailabs.exists():
+        todos_bonafide = listar_wavs(raiz_mailabs)
+        n_bonafide = len(filas_spoof)
+        muestra_bonafide = rng.sample(todos_bonafide, min(len(todos_bonafide), n_bonafide))
+        for wav in muestra_bonafide:
+            filas_bonafide.append(ruta_a_fila(wav, "M-AILABS", "multi", "bonafide", "zeroshot"))
+        print(f"  Zero-shot bonafide: {len(filas_bonafide):,} archivos (M-AILABS, idiomas entrenamiento)")
+    else:
+        print(f"  ADVERTENCIA: no se encontró M-AILABS en {raiz_mailabs}")
+
+    return filas_spoof + filas_bonafide
 
 
 # ---------------------------------------------------------------------------
 # Escenario 3: Fuera de dominio — SONAR + SpoofCeleb
 # ---------------------------------------------------------------------------
+
+def etiqueta_sonar(partes) -> str | None:
+    """
+    Etiqueta de un archivo de SONAR segun su subconjunto y subcarpeta.
+      LJSpeech        : grabaciones reales                        -> bonafide
+      LibriSeVoc      : carpeta 'gt' = real; el resto son vocoders -> bonafide / spoof
+      In_the_Wild     : carpetas 'bona-fide' / 'spoof'
+      SONAR_core      : carpetas 'bonafide' / 'spoof'
+      generated_audio : audio generado                            -> spoof
+    Devuelve None si el subconjunto o la carpeta no tienen regla (no se asume clase).
+    """
+    p = set(partes)
+    if "LJSpeech" in p:
+        return "bonafide"
+    if "LibriSeVoc" in p:
+        return "bonafide" if "gt" in p else "spoof"
+    if "In_the_Wild" in p or "SONAR_core" in p:
+        if p & {"bonafide", "bona-fide"}:
+            return "bonafide"
+        if "spoof" in p:
+            return "spoof"
+        return None
+    if "generated_audio" in p:
+        return "spoof"
+    return None
+
 
 def generar_fueradominio(base: Path, rng: random.Random) -> list[dict]:
     """
@@ -146,16 +183,17 @@ def generar_fueradominio(base: Path, rng: random.Random) -> list[dict]:
     filas_sonar = []
     filas_spoofceleb = []
 
-    # SONAR — recorrer todas las subcarpetas buscando bonafide y spoof
+    # SONAR — la etiqueta depende del subconjunto y de su subcarpeta
     raiz_sonar = base / "SONAR"
+    sin_etiqueta = 0
     for wav in listar_wavs(raiz_sonar):
-        partes = wav.parts
-        # Determinar label por si "bonafide" o "spoof" aparece en la ruta
-        if "bonafide" in partes or "In_the_Wild" in partes or "LibriSeVoc" in partes or "LJSpeech" in partes:
-            label = "bonafide"
-        else:
-            label = "spoof"
+        label = etiqueta_sonar(wav.parts)
+        if label is None:
+            sin_etiqueta += 1
+            continue
         filas_sonar.append(ruta_a_fila(wav, "SONAR", "en", label, "fueradominio"))
+    if sin_etiqueta:
+        print(f"  ADVERTENCIA: {sin_etiqueta:,} archivos de SONAR sin regla de etiqueta (excluidos)")
 
     # SpoofCeleb
     raiz_spoofceleb = base / "SpoofCeleb"

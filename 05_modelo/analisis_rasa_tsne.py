@@ -182,7 +182,7 @@ def graficar(flujo, coords, idiomas, clases, salida):
 
 def main():
     ap = argparse.ArgumentParser(description="Embeddings antes/despues de RASA: t-SNE y metricas")
-    ap.add_argument("--exp", type=int, default=1, choices=[1, 2, 3])
+    ap.add_argument("--exp", type=int, default=1, choices=[1, 2, 3, 4])
     ap.add_argument("--carpeta", required=True, help="carpeta del entrenamiento (con checkpoint_mejor.pt)")
     ap.add_argument("--n-por-grupo", type=int, default=150, dest="n")
     ap.add_argument("--val-pct", type=int, default=20, dest="val_pct")

@@ -1,3 +1,4 @@
+
 """
 Pruebas unitarias del algoritmo de alineacion de estilo RASA (R6).
 Datos sinteticos con la escala real de los embeddings (media ~1e-4, sigma ~0.07).

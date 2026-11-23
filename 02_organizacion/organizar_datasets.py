@@ -150,18 +150,43 @@ def _extraer_tar(src, dest):
 
 def _extraer_split_tar(partes, dest):
     dest.mkdir(parents=True, exist_ok=True)
-    log(f"    Concatenando {len(partes)} partes...")
-    cat = subprocess.Popen(
-        ["cat"] + [str(p) for p in sorted(partes)],
-        stdout=subprocess.PIPE)
-    tar = subprocess.Popen(
-        ["tar", "-xzf", "-", "-C", str(dest)],
-        stdin=cat.stdout)
-    cat.stdout.close()
-    tar.wait()
-    cat.wait()
-    if tar.returncode != 0:
-        log("    ERROR en extraccion split", "ERROR")
+    log(f"    Concatenando {len(partes)} partes y extrayendo...")
+    import io
+
+    class ConcatStream(io.RawIOBase):
+        """Stream de lectura que concatena múltiples archivos sin cargarlos en memoria."""
+        def __init__(self, rutas):
+            self._rutas = iter(rutas)
+            self._fh = None
+            self._abrir_siguiente()
+
+        def _abrir_siguiente(self):
+            if self._fh:
+                self._fh.close()
+                self._fh = None
+            ruta = next(self._rutas, None)
+            if ruta:
+                self._fh = open(ruta, "rb")
+
+        def readinto(self, b):
+            while self._fh:
+                n = self._fh.readinto(b)
+                if n:
+                    return n
+                self._abrir_siguiente()
+            return 0
+
+        def readable(self):
+            return True
+
+    stream = io.BufferedReader(ConcatStream(sorted(partes)), buffer_size=1024 * 1024)
+    try:
+        with tarfile.open(fileobj=stream, mode="r|gz") as t:
+            t.extractall(dest, filter="data")
+        log("    Completado")
+    except Exception as e:
+        log(f"    ERROR en extraccion split: {e}", "ERROR")
+        raise
 
 def copiar_audio(src, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -428,17 +453,19 @@ def fase_extraer_asvspoof(dry_run=False):
             if not tars:
                 log(f"    ASVspoof5 {split}: sin tars", "WARN"); continue
             split_dest = dest5 / split / "multilingual"
-            if ya_existe(split_dest) and any(split_dest.rglob("*.flac")):
-                log(f"    ASVspoof5 {split}: ya organizado, saltando"); continue
+            progreso = dest5 / f"_tars_{split}.txt"
+            # Split completo solo si todos los tars están en el archivo de progreso
+            ya_ext = set(progreso.read_text(encoding="utf-8").splitlines()) if progreso.exists() else set()
+            tars_pendientes = [t for t in tars if t.name not in ya_ext]
+            if not tars_pendientes:
+                log(f"    ASVspoof5 {split}: ya organizado ({len(tars)} tars), saltando"); continue
+            if ya_ext:
+                log(f"    ASVspoof5 {split}: reanudando ({len(ya_ext)}/{len(tars)} tars ya procesados)")
             temp = dest5 / f"_temp_{split}"
-            log(f"    ASVspoof5 {split}: {len(tars)} tars...")
+            log(f"    ASVspoof5 {split}: {len(tars_pendientes)} tars pendientes...")
             if not dry_run:
-                progreso = dest5 / f"_tars_{split}.txt"
-                ya_ext = set(progreso.read_text(encoding="utf-8").splitlines()) if progreso.exists() else set()
                 errores = []
-                for tar in tars:
-                    if tar.name in ya_ext:
-                        log(f"      -> {tar.name} (ya extraido, saltando)"); continue
+                for tar in tars_pendientes:
                     log(f"      -> {tar.name}")
                     temp_t = dest5 / f"_temp_{split}_{tar.stem}"
                     try:
@@ -462,18 +489,36 @@ def fase_extraer_asvspoof(dry_run=False):
         log("    ASVspoof5 organizado")
 
 
+def _contar_archivos_mlaad(lang_dir):
+    """Cuenta archivos de audio + meta.csv en un directorio de idioma MLAAD."""
+    return sum(
+        1 for f in lang_dir.rglob("*")
+        if f.is_file() and (f.suffix.lower() in AUDIO_EXT or f.name == "meta.csv")
+    )
+
 def fase_extraer_mlaad(dry_run=False):
     log("  [MLAAD]")
     src  = DIR_SIN_EXTRAER / "MLAAD" / "fake"
     dest = DIR_EXTRAIDAS / "MLAAD" / "fake"
     if not src.exists():
         log("    MLAAD/fake no encontrado", "WARN"); return
-    if ya_existe(dest) and any(dest.iterdir()):
-        log("    MLAAD ya organizado, saltando"); return
-    log("    Copiando fake/{idioma}/{modelo}/...")
-    if not dry_run:
-        for lang_dir in sorted(src.iterdir()):
-            if not lang_dir.is_dir(): continue
+
+    # Verificar idioma a idioma comparando conteo fuente vs destino
+    for lang_dir in sorted(src.iterdir()):
+        if not lang_dir.is_dir(): continue
+        dest_lang = dest / lang_dir.name
+        src_count = _contar_archivos_mlaad(lang_dir)
+        dst_count = _contar_archivos_mlaad(dest_lang) if dest_lang.exists() else 0
+
+        if dst_count >= src_count and dst_count > 0:
+            log(f"    {lang_dir.name}: OK ({dst_count} archivos), saltando")
+            continue
+        if dst_count > 0:
+            log(f"    {lang_dir.name}: incompleto ({dst_count}/{src_count}), completando...")
+        else:
+            log(f"    {lang_dir.name}: copiando ({src_count} archivos)...")
+
+        if not dry_run:
             for model_dir in sorted(lang_dir.iterdir()):
                 if not model_dir.is_dir(): continue
                 dd = dest / lang_dir.name / model_dir.name
@@ -545,13 +590,19 @@ def fase_extraer_codecfake(dry_run=False):
     log("    CodecFake organizado")
 
 
+def _audio_count(path):
+    """Cuenta archivos de audio bajo un directorio."""
+    p = Path(path)
+    return sum(1 for f in p.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXT) if p.exists() else 0
+
 def fase_extraer_sonar(dry_run=False):
     log("  [SONAR]")
     src = DIR_SIN_EXTRAER / "SONAR"
 
     s1 = src / "SONAR_dataset.zip"
     d1 = DIR_EXTRAIDAS / "SONAR" / "SONAR_core"
-    if s1.exists() and not ya_existe(d1):
+    # Marcar como listo solo si la carpeta tiene contenido de audio
+    if s1.exists() and _audio_count(d1) == 0:
         log("    Extrayendo SONAR_dataset.zip...")
         if not dry_run:
             temp = d1 / "_temp"
@@ -571,12 +622,12 @@ def fase_extraer_sonar(dry_run=False):
             except Exception as e:
                 log(f"    [ERROR] SONAR_dataset.zip: {e}", "ERROR")
                 shutil.rmtree(temp, ignore_errors=True)
-    elif ya_existe(d1): log("    SONAR_core ya organizado, saltando")
+    elif _audio_count(d1) > 0: log(f"    SONAR_core ya organizado ({_audio_count(d1)} audios), saltando")
     else: log("    SONAR_dataset.zip no encontrado", "WARN")
 
     s2 = src / "release_in_the_wild.zip"
     d2 = DIR_EXTRAIDAS / "SONAR" / "In_the_Wild"
-    if s2.exists() and not ya_existe(d2):
+    if s2.exists() and _audio_count(d2) == 0:
         log("    Extrayendo In-the-Wild (meta.csv -> bonafide/spoof)...")
         if not dry_run:
             temp = d2 / "_temp"
@@ -594,12 +645,12 @@ def fase_extraer_sonar(dry_run=False):
             except Exception as e:
                 log(f"    [ERROR] release_in_the_wild.zip: {e}", "ERROR")
                 shutil.rmtree(temp, ignore_errors=True)
-    elif ya_existe(d2): log("    In-the-Wild ya organizado, saltando")
+    elif _audio_count(d2) > 0: log(f"    In-the-Wild ya organizado ({_audio_count(d2)} audios), saltando")
     else: log("    release_in_the_wild.zip no encontrado", "WARN")
 
     s3 = src / "generated_audio.zip"
     d3 = DIR_EXTRAIDAS / "SONAR" / "generated_audio"
-    if s3.exists() and not ya_existe(d3):
+    if s3.exists() and _audio_count(d3) == 0:
         log("    Extrayendo generated_audio.zip...")
         if not dry_run:
             temp = d3 / "_temp"
@@ -617,11 +668,11 @@ def fase_extraer_sonar(dry_run=False):
             except Exception as e:
                 log(f"    [ERROR] generated_audio.zip: {e}", "ERROR")
                 shutil.rmtree(temp, ignore_errors=True)
-    elif ya_existe(d3): log("    generated_audio ya organizado, saltando")
+    elif _audio_count(d3) > 0: log(f"    generated_audio ya organizado ({_audio_count(d3)} audios), saltando")
 
     s4 = src / "LibriSeVoc.zip"
     d4 = DIR_EXTRAIDAS / "SONAR" / "LibriSeVoc" / "en"
-    if s4.exists() and not ya_existe(d4):
+    if s4.exists() and _audio_count(d4) == 0:
         log("    Extrayendo LibriSeVoc.zip...")
         if not dry_run:
             temp = d4.parent / "_temp"
@@ -638,11 +689,11 @@ def fase_extraer_sonar(dry_run=False):
             except Exception as e:
                 log(f"    [ERROR] LibriSeVoc.zip: {e}", "ERROR")
                 shutil.rmtree(temp, ignore_errors=True)
-    elif ya_existe(d4): log("    LibriSeVoc ya organizado, saltando")
+    elif _audio_count(d4) > 0: log(f"    LibriSeVoc ya organizado ({_audio_count(d4)} audios), saltando")
 
     s5 = src / "LJSpeech-1.1.tar.bz2"
     d5 = DIR_EXTRAIDAS / "SONAR" / "LJSpeech"
-    if s5.exists() and not ya_existe(d5):
+    if s5.exists() and _audio_count(d5) == 0:
         log("    Extrayendo LJSpeech-1.1.tar.bz2...")
         if not dry_run:
             try:
@@ -650,7 +701,7 @@ def fase_extraer_sonar(dry_run=False):
             except Exception as e:
                 log(f"    [ERROR] LJSpeech-1.1.tar.bz2: {e}", "ERROR")
                 shutil.rmtree(d5, ignore_errors=True)
-    elif ya_existe(d5): log("    LJSpeech ya organizado, saltando")
+    elif _audio_count(d5) > 0: log(f"    LJSpeech ya organizado ({_audio_count(d5)} audios), saltando")
 
     log("    SONAR organizado")
 
@@ -706,19 +757,23 @@ def fase_extraer_spoofceleb(dry_run=False):
     log("    SpoofCeleb organizado")
 
 
-def fase_extraer(dry_run=False):
+DATASETS_FASE3 = {
+    "ASVspoof":   fase_extraer_asvspoof,
+    "MLAAD":      fase_extraer_mlaad,
+    "M-AILABS":   fase_extraer_mailabs,
+    "CodecFake":  fase_extraer_codecfake,
+    "SONAR":      fase_extraer_sonar,
+    "SpoofCeleb": fase_extraer_spoofceleb,
+}
+
+def fase_extraer(dry_run=False, **kwargs):
+    solo = kwargs.get("solo")
     log("=" * 70)
     log("FASE 3: Extraccion y organizacion en \'Bases de Datos extraidas\'")
     log("=" * 70)
     DIR_EXTRAIDAS.mkdir(parents=True, exist_ok=True)
-    for nombre, func in [
-        ("ASVspoof",   fase_extraer_asvspoof),
-        ("MLAAD",      fase_extraer_mlaad),
-        ("M-AILABS",   fase_extraer_mailabs),
-        ("CodecFake",  fase_extraer_codecfake),
-        ("SONAR",      fase_extraer_sonar),
-        ("SpoofCeleb", fase_extraer_spoofceleb),
-    ]:
+    seleccion = {solo: DATASETS_FASE3[solo]} if solo else DATASETS_FASE3
+    for nombre, func in seleccion.items():
         try:
             func(dry_run)
         except Exception as e:
@@ -1020,6 +1075,8 @@ def main():
     )
     parser.add_argument("--fases", default="1,2,3,4,5",
                         help="Fases a ejecutar separadas por coma (default: 1,2,3,4,5)")
+    parser.add_argument("--solo", metavar="DB",
+                        help="Solo procesar este dataset en fase 3: " + ", ".join(DATASETS_FASE3))
     parser.add_argument("--dry-run", action="store_true",
                         help="Simula sin realizar cambios en disco")
     args = parser.parse_args()
@@ -1030,17 +1087,25 @@ def main():
         print(f"Fases invalidas: {inv}. Validas: {list(FASES_MAP.keys())}")
         sys.exit(1)
 
+    solo = None
+    if hasattr(args, "solo") and args.solo:
+        if args.solo not in DATASETS_FASE3:
+            print(f"ERROR: '{args.solo}' no reconocido. Opciones: {', '.join(DATASETS_FASE3)}")
+            sys.exit(1)
+        solo = args.solo
+
     if args.dry_run:
         log("*** MODO DRY-RUN: no se realizaran cambios en disco ***")
 
     log(f"Inicio: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log(f"Fases: {selec}  |  dry-run: {args.dry_run}")
+    log(f"Fases: {selec}  |  dry-run: {args.dry_run}" + (f"  |  solo: {solo}" if solo else ""))
     t0 = time.time()
 
     for num in selec:
         nombre, func = FASES_MAP[num]
         try:
-            func(args.dry_run)
+            kwargs = {"solo": solo} if num == "3" and solo else {}
+            func(args.dry_run, **kwargs)
         except KeyboardInterrupt:
             log("Interrumpido. El progreso esta guardado en duraciones.csv", "WARN")
             sys.exit(0)

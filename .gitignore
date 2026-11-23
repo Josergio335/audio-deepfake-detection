@@ -22,3 +22,11 @@ resultados_rasa_exp1/muestra_embeddings.npz
 
 # Excepcion: modelos finales del repositorio (checkpoints de las corridas finales)
 !modelos_entrenados/**/*.pt
+
+# Archivos de trabajo internos (no se publican)
+/CONTEXTO_PROYECTO.md
+/RESULTADOS_EVALUACION.md
+# Figuras t-SNE con 10 colores (se publican las versiones *_16colores.png)
+resultados_e3/tsne_wav2vec2bert.png
+resultados_e3/tsne_wavlm.png
+resultados_e3/tsne_whisper.png

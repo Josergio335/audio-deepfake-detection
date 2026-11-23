@@ -48,10 +48,12 @@ import hashlib
 import json
 import logging
 import os
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -74,6 +76,7 @@ PARTICIONES = {
     1: Path.home() / "particiones/Exp1",   # Cambiar por la ruta donde está el manifest de Exp1
     2: Path.home() / "particiones/Exp2",   # Cambiar por la ruta donde está el manifest de Exp2
     3: Path.home() / "particiones/Exp3",   # Cambiar por la ruta donde está el manifest de Exp3
+    4: Path.home() / "particiones/Exp4",   # Generado por generar_manifest_exp4.py
 }
 
 EMBEDDINGS_DIR = Path.home() / "embeddings"       # Cambiar por la ruta donde están los embeddings
@@ -92,6 +95,14 @@ SEMILLA_SPLIT = 42
 VAL_PCT       = 20   # porcentaje de archivos que va a validacion
 
 ETIQUETAS = {"bonafide": 0, "spoof": 1}
+
+
+def fijar_semilla(semilla: int) -> None:
+    """Fija las semillas de random, numpy y torch (inicializacion y orden del shuffle)."""
+    random.seed(semilla)
+    np.random.seed(semilla)
+    torch.manual_seed(semilla)
+    torch.cuda.manual_seed_all(semilla)
 
 
 def asignar_split(ruta: str, val_pct: int = VAL_PCT, semilla: int = SEMILLA_SPLIT) -> str:
@@ -215,16 +226,24 @@ class ModeloDeepfake(nn.Module):
     SERM se usa solo durante entrenamiento (como perdida adicional).
     """
 
-    def __init__(self, dims=DIMS):
+    def __init__(self, dims=DIMS, sin_rasa=False):
         super().__init__()
         d_w2v   = dims["wav2vec2bert"]
         d_wavlm = dims["wavlm"]
         d_whisp = dims["whisper"]
+        self.sin_rasa = sin_rasa
 
-        # RASA: un modulo por stream (cada uno aprende su propio style bank)
-        self.rasa_w2v   = RASA(d_w2v,   M=160)
-        self.rasa_wavlm = RASA(d_wavlm, M=160)
-        self.rasa_whisp = RASA(d_whisp, M=160)
+        # RASA: un modulo por stream (cada uno aprende su propio style bank).
+        # Con sin_rasa=True (ablacion) se reemplaza por la identidad: los embeddings pasan
+        # sin alineacion y las perdidas orth/reco valen 0; el resto del modelo no cambia.
+        if sin_rasa:
+            self.rasa_w2v   = nn.Identity()
+            self.rasa_wavlm = nn.Identity()
+            self.rasa_whisp = nn.Identity()
+        else:
+            self.rasa_w2v   = RASA(d_w2v,   M=160)
+            self.rasa_wavlm = RASA(d_wavlm, M=160)
+            self.rasa_whisp = RASA(d_whisp, M=160)
 
         # Clasificadores lineales: embedding alineado -> score escalar por stream
         # Un solo numero por stream: logit de bonafide/spoof
@@ -279,14 +298,17 @@ class ModeloDeepfake(nn.Module):
         """
         e1, e2, e3 = emb_list
 
-        # Perdidas RASA: orth + reco para cada stream
-        l_orth = (self.rasa_w2v.orthogonal_loss()
-                  + self.rasa_wavlm.orthogonal_loss()
-                  + self.rasa_whisp.orthogonal_loss()) / 3
+        # Perdidas RASA: orth + reco para cada stream (0 en la ablacion sin RASA)
+        if self.sin_rasa:
+            l_orth = l_reco = e1.new_zeros(())
+        else:
+            l_orth = (self.rasa_w2v.orthogonal_loss()
+                      + self.rasa_wavlm.orthogonal_loss()
+                      + self.rasa_whisp.orthogonal_loss()) / 3
 
-        l_reco = (self.rasa_w2v.reconstruction_loss(e1)
-                  + self.rasa_wavlm.reconstruction_loss(e2)
-                  + self.rasa_whisp.reconstruction_loss(e3)) / 3
+            l_reco = (self.rasa_w2v.reconstruction_loss(e1)
+                      + self.rasa_wavlm.reconstruction_loss(e2)
+                      + self.rasa_whisp.reconstruction_loss(e3)) / 3
 
         # Perdida SERM: usa la concatenacion de los 3 embeddings alineados
         e_concat = torch.cat([e1, e2, e3], dim=-1)  # (B, D1+D2+D3)
@@ -418,8 +440,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Entrena el modelo de deteccion de audio deepfake"
     )
-    parser.add_argument("--exp",      type=int, default=3, choices=[1, 2, 3],
-                        help="Experimento a entrenar (1, 2 o 3)")
+    parser.add_argument("--exp",      type=int, default=3, choices=[1, 2, 3, 4],
+                        help="Experimento a entrenar (1, 2, 3 o 4)")
+    parser.add_argument("--seed",     type=int, default=None,
+                        help="Semilla de inicializacion y shuffle. Sin ella el entrenamiento "
+                             "no es determinista (los resultados de la tesis se obtuvieron sin semilla)")
     parser.add_argument("--epochs",   type=int, default=100)
     parser.add_argument("--bs",       type=int, default=256, dest="batch_size",
                         help="Batch size (256 es viable con embeddings en RAM)")
@@ -434,15 +459,21 @@ def main():
                         help="Porcentaje de archivos para validacion (el resto es train)")
 
     # Pesos de las perdidas auxiliares
+    parser.add_argument("--sin-rasa", action="store_true", dest="sin_rasa",
+                        help="Ablacion: reemplaza RASA por la identidad (sin alineacion de estilo)")
     parser.add_argument("--lambda-orth", type=float, default=0.01)
     parser.add_argument("--lambda-reco", type=float, default=0.01)
     parser.add_argument("--lambda-serm", type=float, default=0.05)
 
     args = parser.parse_args()
 
+    if args.seed is not None:
+        fijar_semilla(args.seed)
+
     # Directorio de salida con timestamp para no sobrescribir experimentos previos
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = SALIDA_BASE / f"exp{args.exp}_{ts}"
+    prefijo = f"exp{args.exp}sinrasa" if args.sin_rasa else f"exp{args.exp}"
+    out_dir = SALIDA_BASE / f"{prefijo}_{ts}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Logging a archivo y consola
@@ -489,7 +520,7 @@ def main():
     logging.info(f"Train: {len(ds_train):,} muestras | Val: {len(ds_val):,} muestras")
 
     # Modelo
-    modelo = ModeloDeepfake().to(args.device)
+    modelo = ModeloDeepfake(sin_rasa=args.sin_rasa).to(args.device)
     n_params = sum(p.numel() for p in modelo.parameters() if p.requires_grad)
     logging.info(f"Parametros entrenables: {n_params:,}")
 
